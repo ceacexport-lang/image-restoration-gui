@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -8,6 +10,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import requests
 from PIL import Image, ImageEnhance, ImageFilter
 
 
@@ -138,33 +141,68 @@ def _fallback_enhancement(input_path: str, output_path: str, scale: int = 2, den
     return str(output)
 
 
+def _remote_enhance(input_path: str, output_path: str, api_url: str, scale: int = 2, denoise: bool = True,
+                    color_boost: float = 1.2, contrast: float = 1.1, sharpness: float = 1.2,
+                    face_restore: bool = False) -> tuple[bool, str]:
+    """Send image to remote API (e.g., replicate.com or custom server) for heavy processing."""
+    try:
+        with open(input_path, "rb") as f:
+            img_data = base64.b64encode(f.read()).decode("utf-8")
+
+        payload = {
+            "image": img_data,
+            "scale": scale,
+            "denoise": denoise,
+            "color_boost": color_boost,
+            "contrast": contrast,
+            "sharpness": sharpness,
+            "face_restore": face_restore,
+        }
+
+        headers = {"Content-Type": "application/json"}
+        response = requests.post(api_url, json=payload, headers=headers, timeout=300)
+        response.raise_for_status()
+
+        result = response.json()
+        if "output_image" in result:
+            img_b64 = result["output_image"]
+            img_bytes = base64.b64decode(img_b64)
+            output_file = Path(output_path)
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_file, "wb") as f:
+                f.write(img_bytes)
+            return True, str(output_file)
+        else:
+            return False, "Remote API did not return output_image"
+    except Exception as exc:
+        return False, f"Remote API error: {exc}"
+
+
 def enhance_image(input_path: str, output_path: str, scale: int = 2, denoise: bool = True,
                   color_boost: float = 1.2, contrast: float = 1.1, sharpness: float = 1.2,
-                  face_restore: bool = False, workflow: str = "Balanced Restore") -> tuple[bool, str, str]:
-    """Try Real-ESRGAN first, then GFPGAN, then fall back to Pillow-based enhancement.
+                  face_restore: bool = False, workflow: str = "Balanced Restore",
+                  use_remote: bool = False, remote_api_url: str = "") -> tuple[bool, str, str]:
+    """Try remote API first, then local Real-ESRGAN/GFPGAN, then fall back to Pillow-based enhancement.
     Returns: (success, output_path, message)
     """
     try:
+        if use_remote and remote_api_url:
+            ok, msg = _remote_enhance(input_path, output_path, remote_api_url, scale=scale, denoise=denoise,
+                                     color_boost=color_boost, contrast=contrast, sharpness=sharpness,
+                                     face_restore=face_restore)
+            if ok:
+                return True, output_path, f"Remote API processing: {msg}"
+            else:
+                return True, output_path, f"Remote API failed, falling back locally: {msg}"
+
         if scale in {2, 4}:
             used, message = _try_real_esrgan(input_path, output_path, scale=scale, use_gpu=True)
             if used:
-                return True, output_path, "Real-ESRGAN applied"
-            if face_restore:
-                used, msg2 = _try_gfpgan(output_path, output_path)
-                if used:
-                    return True, output_path, msg2
-            fallback_path = _fallback_enhancement(
-                input_path,
-                output_path,
-                scale=scale,
-                denoise=denoise,
-                color_boost=color_boost,
-                contrast=contrast,
-                sharpness=sharpness,
-                face_restore=face_restore,
-                workflow=workflow,
-            )
-            return True, fallback_path, f"Fallback pipeline used: {message}"
+                if face_restore:
+                    used, msg2 = _try_gfpgan(output_path, output_path)
+                    if used:
+                        return True, output_path, f"Real-ESRGAN + GFPGAN applied: {msg2}"
+                return True, output_path, "Real-ESRGAN applied locally"
 
         fallback_path = _fallback_enhancement(
             input_path,
@@ -203,6 +241,7 @@ if __name__ == "__main__":
     parser.add_argument("--denoise", action="store_true")
     parser.add_argument("--face-restore", action="store_true")
     parser.add_argument("--workflow", default="Balanced Restore")
+    parser.add_argument("--remote-api", default="", help="Remote API URL for heavy processing")
     args = parser.parse_args()
 
     ok, out, msg = enhance_image(
@@ -215,172 +254,7 @@ if __name__ == "__main__":
         sharpness=1.2,
         face_restore=args.face_restore,
         workflow=args.workflow,
+        use_remote=bool(args.remote_api),
+        remote_api_url=args.remote_api,
     )
     print(f"ok={ok}, output={out}, message={msg}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
