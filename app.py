@@ -1,90 +1,257 @@
-from __future__ import annotations
-
-import os
-import subprocess
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageEnhance, ImageFilter
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QPixmap
+from PyQt5.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ai_pipeline import enhance_image
 
 
-def has_command(cmd_name: str) -> bool:
-    return shutil.which(cmd_name) is not None
+class OldPhotoRestorationApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Old Photo Restoration Studio")
+        self.resize(1100, 720)
+
+        self.input_path = ""
+        self.output_path = ""
+
+        self._build_ui()
+
+    def _build_ui(self):
+        central = QWidget()
+        layout = QVBoxLayout(central)
+
+        top = QHBoxLayout()
+        left = QVBoxLayout()
+        right = QVBoxLayout()
+
+        input_group = QGroupBox("Input")
+        input_layout = QFormLayout()
+        self.image_path_edit = QLineEdit()
+        self.image_path_edit.setReadOnly(True)
+        self.image_path_edit.setPlaceholderText("No image selected")
+        input_layout.addRow("Image:", self.image_path_edit)
+
+        load_btn = QPushButton("Load Image")
+        load_btn.clicked.connect(self.load_image)
+        input_layout.addRow(load_btn)
+        input_group.setLayout(input_layout)
+        left.addWidget(input_group)
+
+        options_group = QGroupBox("Enhancement")
+        options_layout = QFormLayout()
+
+        self.scale_box = QComboBox()
+        self.scale_box.addItems(["2x", "4x"])
+        self.scale_box.setCurrentIndex(0)
+        options_layout.addRow("Upscale:", self.scale_box)
+
+        self.workflow_box = QComboBox()
+        self.workflow_box.addItems([
+            "Balanced Restore",
+            "Faded Color Restore",
+            "Modern Fresh Look",
+            "Portrait Refresh",
+            "High Detail Restore",
+        ])
+        self.workflow_box.setCurrentIndex(0)
+        options_layout.addRow("Workflow:", self.workflow_box)
+
+        self.denoise_box = QCheckBox("Denoise")
+        self.denoise_box.setChecked(True)
+        options_layout.addRow(self.denoise_box)
+
+        self.face_restore_box = QCheckBox("Face restoration")
+        options_layout.addRow(self.face_restore_box)
+
+        self.color_box = QDoubleSpinBox()
+        self.color_box.setRange(0.5, 2.5)
+        self.color_box.setDecimals(2)
+        self.color_box.setSingleStep(0.05)
+        self.color_box.setValue(1.20)
+        options_layout.addRow("Color boost:", self.color_box)
+
+        self.contrast_box = QDoubleSpinBox()
+        self.contrast_box.setRange(0.5, 2.0)
+        self.contrast_box.setDecimals(2)
+        self.contrast_box.setSingleStep(0.05)
+        self.contrast_box.setValue(1.10)
+        options_layout.addRow("Contrast:", self.contrast_box)
+
+        self.sharpness_box = QDoubleSpinBox()
+        self.sharpness_box.setRange(0.5, 2.5)
+        self.sharpness_box.setDecimals(2)
+        self.sharpness_box.setSingleStep(0.05)
+        self.sharpness_box.setValue(1.20)
+        options_layout.addRow("Sharpness:", self.sharpness_box)
+
+        options_group.setLayout(options_layout)
+        left.addWidget(options_group)
+
+        action_row = QHBoxLayout()
+        run_btn = QPushButton("Run Enhancement")
+        run_btn.clicked.connect(self.run_pipeline)
+        save_btn = QPushButton("Save Output")
+        save_btn.clicked.connect(self.save_output)
+        action_row.addWidget(run_btn)
+        action_row.addWidget(save_btn)
+        left.addLayout(action_row)
+
+        log_group = QGroupBox("Process Log")
+        log_layout = QVBoxLayout()
+        self.log_edit = QTextEdit()
+        self.log_edit.setReadOnly(True)
+        log_layout.addWidget(self.log_edit)
+        log_group.setLayout(log_layout)
+        left.addWidget(log_group)
+
+        preview_group = QGroupBox("Preview")
+        preview_layout = QVBoxLayout()
+
+        before_label = QLabel("Before")
+        before_label.setAlignment(Qt.AlignCenter)
+        before_label.setMinimumHeight(260)
+        before_label.setStyleSheet("border: 1px solid #888; background: #202020;")
+
+        after_label = QLabel("After")
+        after_label.setAlignment(Qt.AlignCenter)
+        after_label.setMinimumHeight(260)
+        after_label.setStyleSheet("border: 1px solid #888; background: #202020;")
+
+        self.before_label = before_label
+        self.after_label = after_label
+
+        preview_row = QHBoxLayout()
+        preview_row.addWidget(before_label)
+        preview_row.addWidget(after_label)
+        preview_layout.addLayout(preview_row)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        preview_layout.addWidget(self.progress_bar)
+        preview_group.setLayout(preview_layout)
+        right.addWidget(preview_group)
+
+        top.addLayout(left, 1)
+        top.addLayout(right, 2)
+        layout.addLayout(top)
+        self.setCentralWidget(central)
+
+    def log(self, message: str):
+        self.log_edit.append(message)
+        QApplication.processEvents()
+
+    def load_image(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select image",
+            "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)",
+        )
+        if not path:
+            return
+
+        self.input_path = path
+        self.output_path = str(Path(path).with_name(Path(path).stem + "_restored.png"))
+        self.image_path_edit.setText(path)
+
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            QMessageBox.warning(self, "Load failed", "Could not load the selected file.")
+            return
+
+        self.before_label.setPixmap(pixmap.scaledToWidth(420, Qt.SmoothTransformation))
+        self.log(f"Loaded image: {path}")
+
+    def run_pipeline(self):
+        if not self.input_path:
+            QMessageBox.warning(self, "No image", "Please load an image first.")
+            return
+
+        self.progress_bar.setValue(0)
+        self.log("Starting image enhancement...")
+
+        try:
+            scale = 4 if self.scale_box.currentText() == "4x" else 2
+            workflow = self.workflow_box.currentText()
+            denoise = self.denoise_box.isChecked()
+            face_restore = self.face_restore_box.isChecked()
+            color_boost = self.color_box.value()
+            contrast = self.contrast_box.value()
+            sharpness = self.sharpness_box.value()
+
+            self.progress_bar.setValue(20)
+            ok, output, message = enhance_image(
+                self.input_path,
+                self.output_path,
+                scale=scale,
+                denoise=denoise,
+                color_boost=color_boost,
+                contrast=contrast,
+                sharpness=sharpness,
+                face_restore=face_restore,
+                workflow=workflow,
+            )
+            self.progress_bar.setValue(100)
+            self.log(f"{message}")
+            self.log(f"Output saved to: {output}")
+
+            pixmap = QPixmap(output)
+            if not pixmap.isNull():
+                self.after_label.setPixmap(pixmap.scaledToWidth(420, Qt.SmoothTransformation))
+
+            QMessageBox.information(self, "Done", "The restored image has been created successfully.")
+        except Exception as exc:
+            self.log(f"Error: {exc}")
+            QMessageBox.critical(self, "Processing Error", str(exc))
+
+    def save_output(self):
+        if not self.output_path or not Path(self.output_path).exists():
+            QMessageBox.warning(self, "No output", "Run enhancement first to generate an output image.")
+            return
+
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save restored image",
+            str(Path(self.output_path).with_suffix(".png")),
+            "PNG (*.png);;JPEG (*.jpg);;TIFF (*.tif)",
+        )
+        if not save_path:
+            return
+
+        from PIL import Image
+        img = Image.open(self.output_path)
+        img.save(save_path)
+        self.log(f"Saved final result: {save_path}")
+        QMessageBox.information(self, "Saved", "Final image saved successfully.")
 
 
-def run_optional_ai_pipeline(input_path: str, output_path: str, scale: int = 2, face_restore: bool = False) -> bool:
-    """Attempts to call external AI tools if installed.
-
-    This function intentionally fails gracefully: if the packages are not available,
-    it returns False and the app falls back to the built-in Pillow pipeline.
-    """
-    try:
-        import importlib.util
-
-        realesrgan_ok = importlib.util.find_spec("realesrgan") is not None
-        gfpgan_ok = importlib.util.find_spec("gfpgan") is not None
-
-        if not realesrgan_ok and not gfpgan_ok:
-            return False
-
-        if realesrgan_ok:
-            # Best effort. This is intentionally generic because Real-ESRGAN CLI
-            # usage varies by package version. We avoid hard-coding an invalid command.
-            try:
-                subprocess.run(
-                    [sys.executable, "-m", "realesrgan", "--help"],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            except Exception:
-                pass
-
-        if face_restore and gfpgan_ok:
-            try:
-                subprocess.run(
-                    [sys.executable, "-m", "gfpgan", "--help"],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            except Exception:
-                pass
-
-        return True
-    except Exception:
-        return False
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = OldPhotoRestorationApp()
+    window.show()
+    sys.exit(app.exec_())
 
 
-def apply_native_enhancement(input_path: str, output_path: str, scale: int = 2, denoise: bool = True,
-                            color_boost: float = 1.2, contrast: float = 1.1, sharpness: float = 1.2,
-                            face_restore: bool = False, workflow: str = "Balanced Restore") -> str:
-    """Apply a practical enhancement pipeline with Pillow, and optionally trigger external AI tools if available."""
-    image = Image.open(input_path).convert("RGB")
 
-    # Optional AI pipeline is allowed, but the app should still work without it.
-    external_used = run_optional_ai_pipeline(input_path, output_path, scale=scale, face_restore=face_restore)
 
-    if denoise:
-        image = image.filter(ImageFilter.MedianFilter(size=3))
-
-    if workflow in {"Faded Color Restore", "Modern Fresh Look", "Portrait Refresh"}:
-        image = image.filter(ImageFilter.SHARPEN)
-
-    if scale >= 4:
-        image = image.resize((image.width * 2, image.height * 2), Image.Resampling.LANCZOS)
-
-    # Color and contrast tuning
-    image = ImageEnhance.Color(image).enhance(color_boost)
-    image = ImageEnhance.Contrast(image).enhance(contrast)
-    image = ImageEnhance.Sharpness(image).enhance(sharpness)
-
-    # Portrait pass if enabled and external model is absent
-    if face_restore and not external_used:
-        image = image.filter(ImageFilter.SHARPEN)
-        image = image.resize((image.width + 20, image.height + 20), Image.Resampling.LANCZOS)
-
-    output = Path(output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    image.save(output)
-    return str(output)
