@@ -1,5 +1,7 @@
 import sys
 import threading
+import cv2
+import numpy as np
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, pyqtSignal, QObject
@@ -40,11 +42,13 @@ class OldPhotoRestorationApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Old Photo Restoration Studio v2")
-        self.resize(1200, 800)
+        self.resize(1200, 900)
 
         self.input_path = ""
         self.input_folder = ""
         self.output_path = ""
+        self.batch_output_folder = ""
+        self.batch_processed_files = []
         self.signals = ProcessSignals()
         self.signals.log.connect(self._on_log)
         self.signals.progress.connect(self._on_progress)
@@ -59,13 +63,13 @@ class OldPhotoRestorationApp(QMainWindow):
         # Tabs for single image and batch processing
         self.tabs = QTabWidget()
 
-        # Tab 1: Single image with presets
+        # Tab 1: Single image with folder batch option
         self.tab_single = self._build_single_image_tab()
-        self.tabs.addTab(self.tab_single, "Single Image")
+        self.tabs.addTab(self.tab_single, "Single Image & Batch")
 
-        # Tab 2: Batch processing
+        # Tab 2: Batch processing (legacy)
         self.tab_batch = self._build_batch_tab()
-        self.tabs.addTab(self.tab_batch, "Batch Restore")
+        self.tabs.addTab(self.tab_batch, "Quick Batch")
 
         layout.addWidget(self.tabs)
         self.setCentralWidget(central)
@@ -89,6 +93,16 @@ class OldPhotoRestorationApp(QMainWindow):
         load_btn = QPushButton("Load Image")
         load_btn.clicked.connect(self.load_image)
         input_layout.addRow(load_btn)
+
+        # New: Select folder for batch within single image tab
+        self.folder_path_edit = QLineEdit()
+        self.folder_path_edit.setReadOnly(True)
+        self.folder_path_edit.setPlaceholderText("No folder selected")
+        input_layout.addRow("Or Folder:", self.folder_path_edit)
+        load_folder_btn = QPushButton("Load Folder")
+        load_folder_btn.clicked.connect(self.load_folder)
+        input_layout.addRow(load_folder_btn)
+
         input_group.setLayout(input_layout)
         left.addWidget(input_group)
 
@@ -106,7 +120,7 @@ class OldPhotoRestorationApp(QMainWindow):
         # Quick presets
         preset_group = QGroupBox("Quick Restore Presets")
         preset_layout = QVBoxLayout()
-        self.restore_btn = QPushButton("🎯 Restore Old Photo (Auto)")
+        self.restore_btn = QPushButton("🖼️ Restore Old Photo (Auto)")
         self.restore_btn.setStyleSheet("font-weight: bold; padding: 10px;")
         self.restore_btn.clicked.connect(self.restore_old_photo_quick)
         preset_layout.addWidget(self.restore_btn)
@@ -194,12 +208,19 @@ class OldPhotoRestorationApp(QMainWindow):
         action_row.addWidget(save_btn)
         left.addLayout(action_row)
 
+        # Create video button (initially disabled)
+        self.create_video_btn = QPushButton("🎬 Create Video from Batch")
+        self.create_video_btn.setStyleSheet("font-weight: bold; padding: 8px; background-color: #4CAF50; color: white;")
+        self.create_video_btn.clicked.connect(self.create_and_play_video)
+        self.create_video_btn.setEnabled(False)
+        left.addWidget(self.create_video_btn)
+
         # Log section
         log_group = QGroupBox("Process Log")
         log_layout = QVBoxLayout()
         self.log_edit = QTextEdit()
         self.log_edit.setReadOnly(True)
-        self.log_edit.setMaximumHeight(120)
+        self.log_edit.setMaximumHeight(100)
         log_layout.addWidget(self.log_edit)
         log_group.setLayout(log_layout)
         left.addWidget(log_group)
@@ -210,12 +231,12 @@ class OldPhotoRestorationApp(QMainWindow):
 
         before_label = QLabel("Before")
         before_label.setAlignment(Qt.AlignCenter)
-        before_label.setMinimumHeight(320)
+        before_label.setMinimumHeight(300)
         before_label.setStyleSheet("border: 1px solid #888; background: #202020;")
 
         after_label = QLabel("After")
         after_label.setAlignment(Qt.AlignCenter)
-        after_label.setMinimumHeight(320)
+        after_label.setMinimumHeight(300)
         after_label.setStyleSheet("border: 1px solid #888; background: #202020;")
 
         self.before_label = before_label
@@ -332,8 +353,12 @@ class OldPhotoRestorationApp(QMainWindow):
             return
 
         self.input_path = path
+        self.input_folder = ""  # Clear folder if single image is loaded
+        self.folder_path_edit.setText("")
         self.output_path = str(Path(path).with_name(Path(path).stem + "_restored.png"))
         self.image_path_edit.setText(path)
+        self.create_video_btn.setEnabled(False)
+        self.batch_processed_files = []
 
         pixmap = QPixmap(path)
         if pixmap.isNull():
@@ -343,10 +368,25 @@ class OldPhotoRestorationApp(QMainWindow):
         self.before_label.setPixmap(pixmap.scaledToWidth(420, Qt.SmoothTransformation))
         self.log(f"Loaded image: {path}")
 
+    def load_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select folder with images")
+        if not folder:
+            return
+
+        self.input_folder = folder
+        self.input_path = ""  # Clear single image
+        self.image_path_edit.setText("")
+        self.folder_path_edit.setText(folder)
+        self.create_video_btn.setEnabled(False)
+        self.batch_processed_files = []
+
+        image_files = list(Path(folder).glob("*.png")) + list(Path(folder).glob("*.jpg")) + list(Path(folder).glob("*.jpeg"))
+        self.log(f"Loaded folder: {folder} ({len(image_files)} images found)")
+
     def restore_old_photo_quick(self):
         """One-click auto restore with sensible defaults for old photos."""
-        if not self.input_path:
-            QMessageBox.warning(self, "No image", "Please load an image first.")
+        if not self.input_path and not self.input_folder:
+            QMessageBox.warning(self, "No image/folder", "Please load an image or folder first.")
             return
 
         self.scale_box.setCurrentText("4x")
@@ -360,8 +400,8 @@ class OldPhotoRestorationApp(QMainWindow):
         self.run_pipeline()
 
     def run_pipeline(self):
-        if not self.input_path:
-            QMessageBox.warning(self, "No image", "Please load an image first.")
+        if not self.input_path and not self.input_folder:
+            QMessageBox.warning(self, "No input", "Please load an image or folder first.")
             return
 
         self.progress_bar.setValue(0)
@@ -378,10 +418,62 @@ class OldPhotoRestorationApp(QMainWindow):
                 use_remote = self.use_remote_box.isChecked()
                 remote_api_url = self.remote_api_edit.text().strip() if use_remote else ""
 
-                self.signals.progress.emit(20)
-                ok, output, message = enhance_image(
-                    self.input_path,
-                    self.output_path,
+                if self.input_path:
+                    # Single image
+                    self.signals.progress.emit(20)
+                    ok, output, message = enhance_image(
+                        self.input_path,
+                        self.output_path,
+                        scale=scale,
+                        denoise=denoise,
+                        color_boost=color_boost,
+                        contrast=1.10,
+                        sharpness=sharpness,
+                        face_restore=face_restore,
+                        workflow=workflow,
+                        use_remote=use_remote,
+                        remote_api_url=remote_api_url,
+                    )
+                    self.signals.progress.emit(100)
+                    self.signals.log.emit(f"{message}")
+                    self.signals.log.emit(f"Output saved to: {output}")
+                    self.signals.done.emit(ok, output)
+                else:
+                    # Batch folder
+                    self._process_folder_batch(
+                        scale, denoise, color_boost, sharpness, face_restore, workflow, use_remote, remote_api_url
+                    )
+            except Exception as exc:
+                self.signals.log.emit(f"Error: {exc}")
+                QMessageBox.critical(self, "Processing Error", str(exc))
+
+        thread = threading.Thread(target=process, daemon=True)
+        thread.start()
+
+    def _process_folder_batch(self, scale, denoise, color_boost, sharpness, face_restore, workflow, use_remote, remote_api_url):
+        """Process all images in a folder and save processed file paths."""
+        try:
+            folder = Path(self.input_folder)
+            output_folder = folder / "restored"
+            output_folder.mkdir(parents=True, exist_ok=True)
+
+            image_files = sorted(
+                list(folder.glob("*.png")) + list(folder.glob("*.jpg")) + list(folder.glob("*.jpeg"))
+            )
+            total = len(image_files)
+            self.batch_processed_files = []
+
+            self.signals.log.emit(f"Processing {total} images...")
+            QApplication.processEvents()
+
+            for idx, img_file in enumerate(image_files):
+                output_file = output_folder / f"{img_file.stem}_restored.png"
+                self.signals.log.emit(f"[{idx + 1}/{total}] Processing {img_file.name}...")
+                QApplication.processEvents()
+
+                ok, out, msg = enhance_image(
+                    str(img_file),
+                    str(output_file),
                     scale=scale,
                     denoise=denoise,
                     color_boost=color_boost,
@@ -392,16 +484,86 @@ class OldPhotoRestorationApp(QMainWindow):
                     use_remote=use_remote,
                     remote_api_url=remote_api_url,
                 )
-                self.signals.progress.emit(100)
-                self.signals.log.emit(f"{message}")
-                self.signals.log.emit(f"Output saved to: {output}")
-                self.signals.done.emit(ok, output)
-            except Exception as exc:
-                self.signals.log.emit(f"Error: {exc}")
-                QMessageBox.critical(self, "Processing Error", str(exc))
+                if ok and Path(out).exists():
+                    self.batch_processed_files.append(str(out))
+                    self.signals.log.emit(f"✓ {img_file.name}: Done")
+                else:
+                    self.signals.log.emit(f"✗ {img_file.name}: Failed")
 
-        thread = threading.Thread(target=process, daemon=True)
-        thread.start()
+                progress = int((idx + 1) / total * 100)
+                self.signals.progress.emit(progress)
+                QApplication.processEvents()
+
+            self.signals.log.emit(f"\n✓ Batch complete! {len(self.batch_processed_files)}/{total} images processed.")
+            self.signals.log.emit(f"Output folder: {output_folder}")
+            self.create_video_btn.setEnabled(len(self.batch_processed_files) > 0)
+        except Exception as exc:
+            self.signals.log.emit(f"Batch error: {exc}")
+
+    def create_and_play_video(self):
+        """Create a video from processed images and play it."""
+        if not self.batch_processed_files:
+            QMessageBox.warning(self, "No processed images", "No images to create video from.")
+            return
+
+        try:
+            # Get video output path
+            output_folder = Path(self.input_folder) / "restored"
+            video_path = output_folder / "restoration_sequence.mp4"
+
+            self.log(f"Creating video from {len(self.batch_processed_files)} images...")
+            QApplication.processEvents()
+
+            # Read first image to get dimensions
+            first_img = cv2.imread(self.batch_processed_files[0])
+            if first_img is None:
+                raise Exception("Could not read first image")
+
+            height, width = first_img.shape[:2]
+            fps = 2  # 2 frames per second for smooth viewing
+
+            # Create video writer
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(str(video_path), fourcc, fps, (width, height))
+
+            # Write frames
+            for i, img_path in enumerate(self.batch_processed_files):
+                frame = cv2.imread(img_path)
+                if frame is None:
+                    self.log(f"Skipping {img_path}: could not read")
+                    continue
+                frame = cv2.resize(frame, (width, height))
+                out.write(frame)
+                self.log(f"Added frame {i + 1}/{len(self.batch_processed_files)}")
+                QApplication.processEvents()
+
+            out.release()
+            self.log(f"✓ Video created: {video_path}")
+            QMessageBox.information(self, "Video Created", f"Video saved to:\n{video_path}\n\nStarting playback...")
+
+            # Play video
+            self._play_video(str(video_path))
+        except Exception as exc:
+            self.log(f"Video creation error: {exc}")
+            QMessageBox.critical(self, "Video Error", str(exc))
+
+    def _play_video(self, video_path: str):
+        """Play video using OpenCV or system player."""
+        try:
+            import subprocess
+            import platform
+
+            system = platform.system()
+            if system == "Linux":
+                subprocess.Popen(["vlc", video_path])
+            elif system == "Darwin":  # macOS
+                subprocess.Popen(["open", video_path])
+            elif system == "Windows":
+                subprocess.Popen(["powershell", "-Command", f"& {{Start-Process '{video_path}'}}" ])
+            else:
+                self.log("Could not auto-play video. Please open manually.")
+        except Exception as exc:
+            self.log(f"Playback error: {exc}. Please open the video file manually: {video_path}")
 
     def save_output(self):
         if not self.output_path or not Path(self.output_path).exists():

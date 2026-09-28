@@ -2,6 +2,7 @@ Pillow>=10.2.0
 PyQt5>=5.15.10
 numpy>=1.26.0
 requests>=2.31.0
+opencv-python>=4.8.0
 
 # Optional advanced AI packages for stronger restoration output on GPU systems:
 # torch>=2.2.0
