@@ -1,11 +1,41 @@
-Pillow>=10.2.0
-PyQt5>=5.15.10
-numpy>=1.26.0
-requests>=2.31.0
-opencv-python>=4.8.0
+# Old Photo Restoration Studio v3
 
-# Optional advanced AI packages for stronger restoration output on GPU systems:
-# torch>=2.2.0
-# realesrgan>=0.3.0
-# gfpgan>=1.3.8
-# facexlib>=0.2.0
+A local-first desktop GUI for restoring old colored photos, with optional remote processing and folder-based batch processing.
+
+## Features
+
+- Load image or entire folder
+- 2x / 4x upscaling
+- Denoise, color, face, detail controls
+- One-click restore preset
+- Save restored image
+- Process each image in a folder using selected parameters
+- Create a video from the processed outputs and play it automatically
+
+## Install
+
+```bash
+cd ~/image-restoration-gui
+python3 -m venv venv
+source venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+## Run
+
+```bash
+python app.py
+```
+
+## Workflow
+
+1. Load image or folder
+2. Adjust parameters or use the automatic restore preset
+3. Click Run Enhancement
+4. If folder mode was used, the video button becomes active after processing
+5. Click Create & Play Video to render the output frames into an MP4 and open it
+
+## Notes
+
+This version is designed to work locally for most processing, while still allowing a remote API path for heavier GPU jobs.
